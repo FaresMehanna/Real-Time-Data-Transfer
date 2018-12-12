@@ -90,5 +90,3 @@ int main(int argc, char** argv) {
 
 	return 6;
 }
-
-//g++ real_time_system_always_on_test.cpp ../senders/tcp_sender.cpp  ../systems/real_time_system.cpp ../timers/free_wait_timer.cpp ../timers/timers_utils.cpp ../utils/error.cpp  ../utils/mutex_raii.cpp -pthread -std=c++11 -o rtsaot

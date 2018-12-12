@@ -20,6 +20,10 @@ DataPacketsList my_fn(RealTimeInfo* inf) {
 		cout << "Skipped Frame Detected." << endl;
 	}
 
+	if(inf->get_delayed_time_ms()) {
+		cout << "Tolerance Used In Last Packet is " << inf->get_delayed_time_ms() << "." << endl;
+	}
+
 	DataPacket packet_1;
 	packet_1.data_ptr = data_to_be_sent;
 	packet_1.data_size = message_size;
@@ -31,21 +35,39 @@ DataPacketsList my_fn(RealTimeInfo* inf) {
 }
 
 int main(int argc, char* argv[]) {
-
-	if(argc != 3) {
+	
+	//display instruction to testing
+	if(argc != 6) {
 		printf("Real time system test\n");
 		printf("\n");
 		printf("Usage:\n");
-		printf("%s port_number single_message_size_in_bytes\n", argv[0]);
+		printf("%s port_number frequency tolerance_time_in_ms single_message_size_in_bytes [zerocopy|nozerocopy]_for_zerocopy_sender.\n", argv[0]);
 		exit(0);
 	}
-
+	
+	//get info from user
 	int port_number = atoi(argv[1]);
-	int frequency = 30;
-	message_size = atoi(argv[2]);
+	int frequency = atoi(argv[2]);
+	int tolerance_time = atoi(argv[3]);
+	message_size = atoi(argv[4]);
 	data_to_be_sent = malloc(message_size);
+	bool zerocopy = strcmp(argv[5],"zerocopy")==0? true : false;
+	
+	//display info to user
+	printf("Port Number : %d\n", port_number);
+	printf("Frequency Used : %d\n", frequency);
+	printf("Tolerance Time : %d\n", tolerance_time);
+	printf("Actual Tolerance Time : %d\n", min(tolerance_time, (1000/frequency) - 5));
+	printf("Singe Message Size : %d\n", message_size);
+	printf("Zero-copy Mode : %s\n\n", zerocopy==true?"Enabled":"Not Enabled");
+	
+	Sender* sender;
+	if(zerocopy) {
+		sender = new TCPSenderZC(port_number);
+	} else {
+		sender = new TCPSender(port_number);
+	}
 
-	TCPSender sender(port_number);
 	FreeWaitTimer timer;
 
 	RealTimeSystem system;
@@ -56,7 +78,7 @@ int main(int argc, char* argv[]) {
 		return 1;
 	}
 
-	if(!system.set_sender(&sender)) {
+	if(!system.set_sender(sender)) {
 		cout << "Failed to set the sender object." << endl;
 		cout << system.get_error() << endl;
 		return 2;
@@ -86,7 +108,6 @@ int main(int argc, char* argv[]) {
 	system.run();
 	cout << "Failed to run the system." << endl;
 	cout << system.get_error() << endl;
+	delete sender;
 	return 6;
 }
-
-//g++ real_time_system_test.cpp ../senders/tcp_sender.cpp  ../systems/real_time_system.cpp ../timers/free_wait_timer.cpp ../timers/timers_utils.cpp ../utils/error.cpp  ../utils/mutex_raii.cpp -pthread -std=c++11 -o rtst

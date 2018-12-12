@@ -44,9 +44,3 @@ int main(void) {
 
 
 }
-
-
-//g++ tcp_sender_test.cpp ../senders/tcp_sender.cpp  ../systems/real_time_system.cpp ../timers/free_wait_timer.cpp ../timers/timers_utils.cpp ../utils/error.cpp  ../utils/mutex_raii.cpp -pthread -std=c++11 -o tst
-
-
-

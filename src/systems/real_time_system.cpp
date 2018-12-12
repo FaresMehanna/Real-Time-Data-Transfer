@@ -102,7 +102,7 @@ bool RealTimeSystem::initialize() {
 	}
 
 	//adjust tolerance
-	ms_tolerance_ = min(ms_tolerance_, 1000/frequency_ - 2);
+	ms_tolerance_ = min(ms_tolerance_, (1000/frequency_) - 5);
 	//set everything is good
 	initialized_ = true;
 	return true;
@@ -202,7 +202,7 @@ bool RealTimeSystem::run() {
 		//if after the extra time is not done yet, then check the skip_mode and act.
 		if(!sender_->is_send_done() && allow_skip_mode_) {
 			//construct the info class
-			RealTimeInfo user_info(sequence_number, true, used_tolerated_time, false);
+			RealTimeInfo user_info(sequence_number, true, used_tolerated_time/2, false);
 			//call the user function then ignore the packets
 			user_packets_list = user_app_func_(&user_info);
 			//check if the user wants to end the system

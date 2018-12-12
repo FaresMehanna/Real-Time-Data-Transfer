@@ -1,6 +1,6 @@
-#include "../../includes/tcp_sender.h"
+#include "../../includes/tcp_sender_zc.h"
 
-namespace tcp_sender{
+namespace tcp_sender_zc{
 
 	#define END_THREAD_ERROR(ERROR_FLAG, ERROR_CODE)\
 		shared_data->is_error = (ERROR_FLAG);	\
@@ -11,11 +11,30 @@ namespace tcp_sender{
 
 	enum TCP_SENDER_ERROR_CODES
 	 {CANT_CPU_AFFINITY, CANT_SOCKET_TIMEOUT, SENDING_ERROR,
-	  NOT_SUPPORTED_DATA_TYPE, NO_ERROR, CANT_SOCKET_BUFFERS};
+	  NOT_SUPPORTED_DATA_TYPE, NO_ERROR, CANT_SOCKET_BUFFERS,
+	ZC_POLL_ERROR, ZC_RECVMSG_ERROR, ZC_NOTIFICATION_ERROR};
 }
 
-using namespace tcp_sender;
+using namespace tcp_sender_zc;
 using namespace timers_utils;
+
+static int64_t read_notification_zc(struct msghdr *msg) {
+
+	struct sock_extended_err *serr;
+	struct cmsghdr *cm;
+
+	cm = CMSG_FIRSTHDR(msg);
+	if (!cm || (cm->cmsg_level != SOL_IP && cm->cmsg_type != IP_RECVERR)) {
+		return -1;
+	}
+
+	serr = (sock_extended_err *) CMSG_DATA(cm);
+	if (serr->ee_origin != SO_EE_ORIGIN_ZEROCOPY) {
+		return -1;
+	}
+
+	return serr->ee_data - serr->ee_info + 1;
+}
 
 static void* tcp_worker_function(void* data) {
 	//the shared data between the main thread and the worker thread.
@@ -53,6 +72,8 @@ static void* tcp_worker_function(void* data) {
 	if(setsockopt(shared_data->sock_fd, SOL_SOCKET, SO_RCVBUF, &buff_size, sizeof(buff_size)) < 0) {
 		END_THREAD_ERROR(true, CANT_SOCKET_BUFFERS);
 	}
+	//last sending counter - used for zerocopy
+	int sending_counter = 0, last_sending_counter = 0;
 	//start the sending loop
 	while(!shared_data->terminate_thread) {
 		/** 
@@ -86,7 +107,8 @@ static void* tcp_worker_function(void* data) {
 				uint_fast32_t data_sent = current_packet->data_offset, remaining_data = current_packet->data_size;
 				while(remaining_data != 0) {
 					//try to send
-					ssize_t s = send(shared_data->sock_fd, ((char*)current_packet->data_ptr) + data_sent, remaining_data, 0);
+					ssize_t s = send(shared_data->sock_fd, ((char*)current_packet->data_ptr) + data_sent, remaining_data, MSG_ZEROCOPY);
+					sending_counter++;
 					//detect error
 					if(s < 0) {
 						END_THREAD_ERROR(true, SENDING_ERROR);
@@ -123,6 +145,51 @@ static void* tcp_worker_function(void* data) {
 
 		}
 
+		//wait untill all messages are sent
+		while(last_sending_counter < sending_counter) {
+
+			struct pollfd pfd;
+			struct msghdr msg;
+			char control[100];
+			int ret;
+
+			//wait for a message
+			pfd.fd = shared_data->sock_fd;
+			pfd.events = 0;
+			if (poll(&pfd, 1, 1000) != 1 || (pfd.revents & POLLERR) == 0) {
+				END_THREAD_ERROR(true, ZC_POLL_ERROR);
+			}
+
+			//get the message
+			msg.msg_control = control;
+			msg.msg_controllen = sizeof(control);
+			ret = recvmsg(shared_data->sock_fd, &msg, MSG_ERRQUEUE);
+			if (ret == -1 || ( msg.msg_flags & MSG_CTRUNC )) {
+				END_THREAD_ERROR(true, ZC_RECVMSG_ERROR);
+			}
+			
+			/*
+			std::cout << msg.msg_name << std::endl;
+			std::cout << msg.msg_namelen << std::endl;
+			std::cout << &(msg.msg_iov) << std::endl;
+			std::cout << msg.msg_iovlen << std::endl;
+			std::cout << msg.msg_control << std::endl;
+			std::cout << msg.msg_controllen << std::endl;
+			std::cout << msg.msg_flags << std::endl;
+			std::cout<< std::endl;
+			*/
+
+			//read the notification
+			if((ret = read_notification_zc(&msg)) < 1) {
+				END_THREAD_ERROR(true, ZC_NOTIFICATION_ERROR);
+			}
+
+			//increase to the range of sended packets
+			last_sending_counter += ret;
+
+		} 
+
+
 		//mark the send as done
 		shared_data->is_done = true;
 	}
@@ -131,7 +198,7 @@ static void* tcp_worker_function(void* data) {
 }
 
 
-TCPSender::TCPSender(uint_fast16_t port) : error_handler_("TCPSender") {
+TCPSenderZC::TCPSenderZC(uint_fast16_t port) : error_handler_("TCPSenderZC") {
 	port_ = port;
 	server_sock_fd_ = -1;
 	client_sock_fd_ = -1;
@@ -143,7 +210,7 @@ TCPSender::TCPSender(uint_fast16_t port) : error_handler_("TCPSender") {
 	shared_data_.is_terminated_thread = true;
 }
 
-bool TCPSender::create_server() {
+bool TCPSenderZC::create_server() {
 
     struct addrinfo hints, *servinfo, *p;
     int yes=1;
@@ -168,6 +235,11 @@ bool TCPSender::create_server() {
         if (setsockopt(server_sock_fd_, SOL_SOCKET, SO_REUSEADDR, &yes,
                 sizeof(int)) == -1) {
 			error_handler_.set_error("error in setsockopt while setting SO_REUSEADDR flag");
+            return false;
+        }
+        if (setsockopt(server_sock_fd_, SOL_SOCKET, SO_ZEROCOPY, &yes,
+                sizeof(int)) == -1) {
+			error_handler_.set_error("error in setsockopt while setting SO_ZEROCOPY flag");
             return false;
         }
         if (bind(server_sock_fd_, p->ai_addr, p->ai_addrlen) == -1) {
@@ -196,7 +268,7 @@ bool TCPSender::create_server() {
     return true;
 }
 
-bool TCPSender::get_client() {
+bool TCPSenderZC::get_client() {
 
     struct sockaddr_storage their_addr; // connector's address information
     socklen_t sin_size;
@@ -211,7 +283,7 @@ bool TCPSender::get_client() {
 }
 
 
-bool TCPSender::initialize() {
+bool TCPSenderZC::initialize() {
 	
 	//clean the last state
 	//destroying the thread
@@ -306,7 +378,7 @@ bool TCPSender::initialize() {
 	return true;
 }
 
-bool TCPSender::send(DataPacketsList* list) {
+bool TCPSenderZC::send(DataPacketsList* list) {
 
 	//if the object not yet initialized
 	if(!initialized_) {
@@ -336,6 +408,11 @@ bool TCPSender::send(DataPacketsList* list) {
 			case CANT_SOCKET_BUFFERS:
 				error_handler_.set_error("Can't reserve the buffers needed for the socket.");
 			break;
+			case ZC_POLL_ERROR:
+			case ZC_RECVMSG_ERROR:
+			case ZC_NOTIFICATION_ERROR:
+				error_handler_.set_error("Error during zero-copy transmission.");
+			break;
 			default:
 				error_handler_.set_error("Unknown error in sender worker thread.");
 			break;
@@ -362,11 +439,11 @@ bool TCPSender::send(DataPacketsList* list) {
 
 }
 
-bool TCPSender::is_send_done() {
+bool TCPSenderZC::is_send_done() {
 	return shared_data_.is_done;
 }
 
-bool TCPSender::end_sender() {
+bool TCPSenderZC::end_sender() {
 
 	//mark it as uninitialized
 	initialized_ = false;
@@ -404,16 +481,16 @@ bool TCPSender::end_sender() {
 }
 
 
-std::string TCPSender::get_error() {
+std::string TCPSenderZC::get_error() {
 	std::string error = error_handler_.get_error();
 	error_handler_.clear_error();
 	return error;
 }
 
-bool TCPSender::is_error() {
+bool TCPSenderZC::is_error() {
 	return error_handler_.is_error();
 }
 
-TCPSender::~TCPSender() {
+TCPSenderZC::~TCPSenderZC() {
 	end_sender();
 }
