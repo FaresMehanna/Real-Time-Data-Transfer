@@ -22,4 +22,4 @@ The final application mainly consists of four components.
 
 The current implementation provide three timers and TCP sender.
 You can test the current implementation by running CMakeLists.txt and execute the tests in the "src/tests" directory.
-You will need to run the TCP tuning scripts on both the sender and receiver devices and it's recommended to shield a CPU on the sender device. Also make sure the receiver increase the receiver buffer for this socket, example of the receiver in "tests/receiver_example.c".
+You will need to run the TCP tuning scripts on both the sender and receiver devices and it's recommended to shield a CPU on the sender device. Also make sure the receiver increase the receiver buffer for this socket, example of the receiver in "others/receiver_example.c".
